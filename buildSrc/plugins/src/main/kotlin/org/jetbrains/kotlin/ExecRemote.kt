@@ -33,11 +33,9 @@ import java.time.format.DateTimeFormatter
  * If we provide -Premote=user@host the binaries are executed on a remote host
  * If we omit -Premote then the binary is executed locally as usual.
  */
-internal class ExecRemote(private val project: Project) {
+internal class ExecRemote(private val project: Project): ExecutorService {
 
-    fun execRemote(closure: Closure<in ExecSpec>) = execRemote(ConfigureUtil.configureUsing(closure))
-
-    fun execRemote(action: Action<in ExecSpec>) =
+    override fun execute(action: Action<in ExecSpec>) =
         if (project.hasProperty("remote"))
             SSHExecutor(project.property("remote") as String)(action)
         else project.exec(action)
