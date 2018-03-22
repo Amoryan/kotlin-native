@@ -68,7 +68,7 @@ ext.platformManager = project.rootProject.platformManager
 ext.target = platformManager.targetManager(project.testTarget).target
 
 // Add executor to run tests depending on a target
-project.convention.plugins.executor = ExecutorServiceKt.getExecutor(project)
+project.convention.plugins.executor = ExecutorServiceKt.create(project)
 
 allprojects {
     // Root directories for test output (logs, compiled files, statistics etc). Only single path must be in each set.

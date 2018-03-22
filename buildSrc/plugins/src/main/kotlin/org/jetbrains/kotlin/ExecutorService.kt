@@ -22,17 +22,27 @@ import org.gradle.api.Project
 import org.gradle.process.ExecResult
 import org.gradle.process.ExecSpec
 import org.gradle.util.ConfigureUtil
+
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.konan.target.PlatformManager
 import org.jetbrains.kotlin.konan.target.Xcode
-import java.io.ByteArrayOutputStream
 
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.nio.file.Paths
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+
+/**
+ * A replacement of the standard exec {}
+ * @see org.gradle.api.Project.exec
+ */
 interface ExecutorService {
     fun execute(closure: Closure<in ExecSpec>): ExecResult? = execute(ConfigureUtil.configureUsing(closure))
     fun execute(action: Action<in ExecSpec>): ExecResult?
 }
 
-fun getExecutor(project: Project): ExecutorService {
+fun create(project: Project): ExecutorService {
     val platformManager = project.rootProject.findProperty("platformManager") as PlatformManager
     val testTarget = platformManager.targetManager(project.findProperty("testTarget") as String?).target
     val platform = platformManager.platform(testTarget)
@@ -52,6 +62,7 @@ fun getExecutor(project: Project): ExecutorService {
                 }
             }
         }
+
         KonanTarget.LINUX_MIPS32, KonanTarget.LINUX_MIPSEL32 -> object : ExecutorService {
             override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec { execSpec ->
                 action.execute(execSpec)
@@ -64,12 +75,27 @@ fun getExecutor(project: Project): ExecutorService {
                 }
             }
         }
+
         KonanTarget.IOS_X64 -> ExecSimulator(project)
-        else -> ExecRemote(project)
+
+        else -> {
+            if (project.hasProperty("remote")) SSHExecutor(project)
+            else object : ExecutorService {
+                override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec(action)
+            }
+        }
     }
 }
 
+/**
+ * Executes a given action with iPhone Simulator.
+ *
+ * The test target should be specified with -Ptest_target=ios_x64
+ * @see KonanTarget.IOS_X64
+ * @property iosDevice an optional project property used to control simulator's device type
+ */
 private class ExecSimulator(private val project: Project) : ExecutorService {
+
     private val simctl by lazy {
         val sdk = Xcode.current.iphonesimulatorSdk
         val out = ByteArrayOutputStream()
@@ -81,10 +107,62 @@ private class ExecSimulator(private val project: Project) : ExecutorService {
         out.toString("UTF-8").trim()
     }
 
-    private val iphone = project.findProperty("iosSimulatorDevice")?.toString() ?: "iPhone 8"
+    private val iosDevice = project.findProperty("iosDevice")?.toString() ?: "iPhone 8"
 
     override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec { execSpec ->
         action.execute(execSpec)
-        with(execSpec) { commandLine = listOf(simctl, "spawn", iphone, executable) + args }
+        with(execSpec) { commandLine = listOf(simctl, "spawn", iosDevice, executable) + args }
+    }
+}
+
+/**
+ * Remote process executor.
+ *
+ * @property remote=user@host makes binaries be executed on a remote host
+ */
+internal class SSHExecutor(private val project: Project) : ExecutorService {
+
+    private val remote: String = project.property("remote").toString()
+
+    // Unique remote dir name to be used in the target host
+    private val remoteDir = run {
+        val date = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
+        Paths.get(project.findProperty("remoteRoot").toString(), "tmp",
+                System.getProperty("user.name") + "_" + date).toString()
+    }
+
+    override fun execute(action: Action<in ExecSpec>): ExecResult {
+        var execFile: String? = null
+
+        createRemoteDir()
+        val execResult = project.exec { execSpec ->
+            action.execute(execSpec)
+            with(execSpec) {
+                upload(executable)
+                executable = "$remoteDir/${File(executable).name}"
+                execFile = executable
+                commandLine = arrayListOf("/usr/bin/ssh", remote) + commandLine
+            }
+        }
+        cleanup(execFile!!)
+        return execResult
+    }
+
+    private fun createRemoteDir() {
+        project.exec {
+            it.commandLine("ssh", remote, "mkdir", "-p", remoteDir)
+        }
+    }
+
+    private fun upload(fileName: String) {
+        project.exec {
+            it.commandLine("scp", fileName, "$remote:$remoteDir")
+        }
+    }
+
+    private fun cleanup(fileName: String) {
+        project.exec {
+            it.commandLine("ssh", remote, "rm", fileName)
+        }
     }
 }
