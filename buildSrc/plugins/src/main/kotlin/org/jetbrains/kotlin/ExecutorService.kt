@@ -24,6 +24,8 @@ import org.gradle.process.ExecSpec
 import org.gradle.util.ConfigureUtil
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.konan.target.PlatformManager
+import org.jetbrains.kotlin.konan.target.Xcode
+import java.io.ByteArrayOutputStream
 
 interface ExecutorService {
     fun execute(closure: Closure<in ExecSpec>): ExecResult? = execute(ConfigureUtil.configureUsing(closure))
@@ -64,5 +66,25 @@ fun getExecutor(project: Project): ExecutorService {
         }
         KonanTarget.IOS_X64 -> ExecSimulator(project)
         else -> ExecRemote(project)
+    }
+}
+
+private class ExecSimulator(private val project: Project) : ExecutorService {
+    private val simctl by lazy {
+        val sdk = Xcode.current.iphonesimulatorSdk
+        val out = ByteArrayOutputStream()
+        val result = project.exec {
+            it.commandLine("/usr/bin/xcrun", "--find", "simctl", "--sdk", sdk)
+            it.standardOutput = out
+        }
+        result.assertNormalExitValue()
+        out.toString("UTF-8").trim()
+    }
+
+    private val iphone = project.findProperty("iosSimulatorDevice")?.toString() ?: "iPhone 8"
+
+    override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec { execSpec ->
+        action.execute(execSpec)
+        with(execSpec) { commandLine = listOf(simctl, "spawn", iphone, executable) + args }
     }
 }
